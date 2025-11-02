@@ -16,5 +16,14 @@ requests
 # Optional
 typing-extensions
 
+# Environment variables
+python-dotenv
 
-dotenv
+# MCP support
+mcp
+langchain-mcp-adapters
+
+# FastAPI and Web Server
+fastapi
+uvicorn[standard]
+python-multipart
