@@ -3,6 +3,7 @@ langgraph
 langchain   # Replace with the version you are using
 langchain-community   # For FAISS tool integration
 langchain-openai
+langchain-google-genai   # For Google Gemini support
 
 # Vectorstore
 faiss-cpu   # Or faiss-gpu if using GPU

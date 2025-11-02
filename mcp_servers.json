@@ -6,5 +6,9 @@
   {
     "name": "my_math",
     "url": "https://mcp-test-kset.onrender.com/math/mcp"
+  },
+  {
+    "name": "openmeteo",
+    "url": "https://mcp.openmeteo.dev/sse"
   }
 ]

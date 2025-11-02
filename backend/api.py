@@ -6,8 +6,7 @@ import json
 from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import sys
 from pathlib import Path
@@ -20,6 +19,7 @@ from src.history import history_manager
 from src.agent import run_agent_mode, run_rag_mode
 from src.mcp_client import MCPClientManager
 from src.tools import retrieve_dosiblog_context
+from src.llm_factory import create_llm_from_config
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -34,14 +34,11 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # In production, specify your React app URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 # Request/Response Models
@@ -67,9 +64,13 @@ class SessionInfo(BaseModel):
 # Health check
 @app.get("/")
 async def root():
-    """Root endpoint - redirect to chat UI"""
-    with open("templates/index.html", "r") as f:
-        return HTMLResponse(content=f.read())
+    """Root endpoint"""
+    return {
+        "name": "AI MCP Agent API",
+        "version": "1.0.0",
+        "status": "running",
+        "docs": "/docs"
+    }
 
 
 @app.get("/health")
@@ -99,9 +100,17 @@ async def chat(request: ChatRequest):
         if request.mode == "rag":
             # RAG-only mode
             from src.rag import rag_system
-            from langchain_openai import ChatOpenAI
             
-            llm = ChatOpenAI(model=Config.OPENAI_MODEL, temperature=0)
+            llm_config = Config.load_llm_config()
+            try:
+                llm = create_llm_from_config(llm_config, streaming=False, temperature=0)
+            except ImportError as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"{str(e)}\n\nTo fix: cd /home/jack/Downloads/mcp-server && source .venv/bin/activate && pip install langchain-google-genai"
+                )
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to initialize LLM: {str(e)}")
             answer = rag_system.query_with_history(
                 request.message, 
                 request.session_id, 
@@ -122,12 +131,95 @@ async def chat(request: ChatRequest):
             async with MCPClientManager(mcp_servers) as mcp_tools:
                 all_tools = [retrieve_dosiblog_context] + mcp_tools
                 
-                # Create agent
-                agent = create_agent(
-                    model=Config.OPENAI_MODEL,
-                    tools=all_tools,
-                    system_prompt="You are a helpful AI assistant with access to various tools. Use them when needed."
-                )
+                # Get LLM from config
+                llm_config = Config.load_llm_config()
+                try:
+                    llm = create_llm_from_config(llm_config, streaming=False, temperature=0)
+                except ImportError as e:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"{str(e)}\n\nTo fix: cd /home/jack/Downloads/mcp-server && source .venv/bin/activate && pip install langchain-google-genai"
+                    )
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Failed to initialize LLM: {str(e)}")
+                
+                # Check if LLM is Ollama (doesn't support bind_tools)
+                is_ollama = llm_config.get("type", "").lower() == "ollama"
+                
+                if is_ollama:
+                    # For Ollama, fall back to RAG mode with tool descriptions
+                    from src.rag import rag_system
+                    tool_descriptions = []
+                    for tool in all_tools:
+                        if hasattr(tool, 'name'):
+                            tool_desc = getattr(tool, 'description', 'No description')
+                            tool_descriptions.append(f"- {tool.name}: {tool_desc}")
+                    
+                    tools_context = "\n".join(tool_descriptions) if tool_descriptions else "No tools available"
+                    
+                    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+                    history = history_manager.get_session_messages(request.session_id)
+                    context = rag_system.retrieve_context(request.message)
+                    
+                    prompt = ChatPromptTemplate.from_messages([
+                        ("system", (
+                            "You are a helpful AI assistant.\n\n"
+                            "Available tools:\n{tools_context}\n\n"
+                            "Context:\n{context}\n\n"
+                            "Use the context to answer questions accurately."
+                        )),
+                        MessagesPlaceholder("chat_history"),
+                        ("human", "{input}"),
+                    ])
+                    
+                    answer = llm.invoke(prompt.format(
+                        tools_context=tools_context,
+                        context=context,
+                        chat_history=history,
+                        input=request.message
+                    )).content
+                    
+                    # Save to history
+                    session_history = history_manager.get_session_history(request.session_id)
+                    session_history.add_user_message(request.message)
+                    session_history.add_ai_message(answer)
+                    
+                    return ChatResponse(
+                        response=answer,
+                        session_id=request.session_id,
+                        mode="agent",
+                        tools_used=[]
+                    )
+                
+                # For OpenAI/Groq - use agent with tools
+                # Create agent - ensure tools are properly bound
+                try:
+                    # Build a system prompt that lists available tools to prevent hallucination
+                    tool_names = []
+                    tool_descriptions = []
+                    for tool in all_tools:
+                        if hasattr(tool, 'name'):
+                            tool_names.append(tool.name)
+                            tool_desc = getattr(tool, 'description', '')
+                            if tool_desc:
+                                tool_descriptions.append(f"- {tool.name}: {tool_desc}")
+                        elif hasattr(tool, '__name__'):
+                            tool_names.append(tool.__name__)
+                    
+                    tools_list = '\n'.join(tool_descriptions) if tool_descriptions else ', '.join(tool_names)
+                    system_prompt = (
+                        "You are a helpful AI assistant with access to these tools ONLY:\n"
+                        f"{tools_list}\n\n"
+                        "ONLY use tools from this exact list. Do not call any tool that is not in this list."
+                    )
+                    
+                    agent = create_agent(
+                        model=llm,
+                        tools=all_tools,
+                        system_prompt=system_prompt
+                    )
+                except Exception as e:
+                    raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
                 
                 # Get history
                 history = history_manager.get_session_messages(request.session_id)
@@ -143,7 +235,29 @@ async def chat(request: ChatRequest):
                             for call in last_msg.tool_calls:
                                 tools_used.append(call['name'])
                         else:
-                            final_answer = last_msg.content
+                            # Handle different content types (string, list, dict)
+                            content_raw = last_msg.content
+                            if isinstance(content_raw, str):
+                                final_answer = content_raw
+                            elif isinstance(content_raw, list):
+                                # Handle list of content blocks (e.g., from Gemini)
+                                final_answer = ""
+                                for item in content_raw:
+                                    if isinstance(item, dict):
+                                        if "text" in item:
+                                            final_answer += item["text"]
+                                        elif "type" in item and item.get("type") == "text":
+                                            final_answer += item.get("text", "")
+                                    elif isinstance(item, str):
+                                        final_answer += item
+                            elif isinstance(content_raw, dict):
+                                # Handle dict content
+                                if "text" in content_raw:
+                                    final_answer = content_raw["text"]
+                                else:
+                                    final_answer = str(content_raw)
+                            else:
+                                final_answer = str(content_raw)
                 
                 # Save to history
                 session_history = history_manager.get_session_history(request.session_id)
@@ -178,9 +292,25 @@ async def chat_stream(request: ChatRequest):
             if request.mode == "rag":
                 # For RAG mode, we'll stream the response
                 from src.rag import rag_system
-                from langchain_openai import ChatOpenAI
                 
-                llm = ChatOpenAI(model=Config.OPENAI_MODEL, temperature=0, streaming=True)
+                llm_config = Config.load_llm_config()
+                try:
+                    llm = create_llm_from_config(llm_config, streaming=True, temperature=0)
+                except ImportError as e:
+                    # Special handling for missing package
+                    error_msg = (
+                        f"{str(e)}\n\n"
+                        "To fix this, run:\n"
+                        "cd /home/jack/Downloads/mcp-server\n"
+                        "source .venv/bin/activate\n"
+                        "pip install langchain-google-genai"
+                    )
+                    yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    return
+                except Exception as e:
+                    error_msg = f"Failed to initialize LLM: {str(e)}"
+                    yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    return
                 
                 # Get history
                 history = history_manager.get_session_messages(request.session_id)
@@ -198,19 +328,80 @@ async def chat_stream(request: ChatRequest):
                 
                 # Stream response
                 full_response = ""
-                async for chunk in llm.astream(prompt.format(
-                    context=context,
-                    chat_history=history,
-                    input=request.message
-                )):
-                    if chunk.content:
-                        full_response += chunk.content
-                        yield f"data: {json.dumps({'chunk': chunk.content, 'done': False})}\n\n"
+                try:
+                    prompt_messages = prompt.format(
+                        context=context,
+                        chat_history=history,
+                        input=request.message
+                    )
+                    async for chunk in llm.astream(prompt_messages):
+                        if hasattr(chunk, 'content') and chunk.content:
+                            # Handle different content types (string, list, dict)
+                            content_raw = chunk.content
+                            
+                            # Convert content to string if needed
+                            if isinstance(content_raw, str):
+                                content_str = content_raw
+                            elif isinstance(content_raw, list):
+                                # Handle list of content blocks (e.g., from Gemini)
+                                content_str = ""
+                                for item in content_raw:
+                                    if isinstance(item, dict):
+                                        # Extract text from content blocks
+                                        if "text" in item:
+                                            content_str += item["text"]
+                                        elif "type" in item and item.get("type") == "text":
+                                            content_str += item.get("text", "")
+                                    elif isinstance(item, str):
+                                        content_str += item
+                            elif isinstance(content_raw, dict):
+                                # Handle dict content
+                                if "text" in content_raw:
+                                    content_str = content_raw["text"]
+                                else:
+                                    content_str = str(content_raw)
+                            else:
+                                content_str = str(content_raw)
+                            
+                            # Stream character by character for smooth display
+                            if content_str:
+                                for char in content_str:
+                                    full_response += char
+                                    yield f"data: {json.dumps({'chunk': char, 'done': False})}\n\n"
+                                    await asyncio.sleep(0.005)  # Small delay for smooth streaming
+                except Exception as e:
+                    import traceback
+                    error_details = str(e)
+                    if not error_details or error_details == "":
+                        error_details = repr(e)
+                    tb_str = traceback.format_exc()
+                    
+                    # Provide helpful error messages
+                    if "Connection" in tb_str or "timeout" in tb_str.lower() or "refused" in tb_str.lower():
+                        error_details = (
+                            f"Connection error to Ollama: {error_details}. "
+                            "Please check:\n"
+                            "- Ollama is running: docker ps | grep ollama\n"
+                            "- Base URL is correct (try http://localhost:11434 or http://host.docker.internal:11434)\n"
+                            "- Test connection: curl http://localhost:11434/api/tags"
+                        )
+                    elif "model" in tb_str.lower() and "not found" in tb_str.lower():
+                        error_details = (
+                            f"Model not found: {error_details}. "
+                            "Please check the model name is correct and the model is available in Ollama."
+                        )
+                    else:
+                        error_details = f"LLM streaming error: {error_details}"
+                    
+                    print(f"❌ RAG streaming error:\n{tb_str}")
+                    yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                    return
                 
                 # Save to history
-                session_history = history_manager.get_session_history(request.session_id)
-                session_history.add_user_message(request.message)
-                session_history.add_ai_message(full_response)
+                if full_response:
+                    session_history = history_manager.get_session_history(request.session_id)
+                    session_history.add_user_message(request.message)
+                    session_history.add_ai_message(full_response)
                 
                 yield f"data: {json.dumps({'chunk': '', 'done': True})}\n\n"
                 
@@ -221,12 +412,186 @@ async def chat_stream(request: ChatRequest):
                 async with MCPClientManager(mcp_servers) as mcp_tools:
                     all_tools = [retrieve_dosiblog_context] + mcp_tools
                     
-                    # Create agent
-                    agent = create_agent(
-                        model=Config.OPENAI_MODEL,
-                        tools=all_tools,
-                        system_prompt="You are a helpful AI assistant with access to various tools. Use them when needed."
-                    )
+                    # Get LLM from config
+                    llm_config = Config.load_llm_config()
+                    try:
+                        llm = create_llm_from_config(llm_config, streaming=True, temperature=0)
+                    except ImportError as e:
+                        # Special handling for missing package
+                        error_msg = (
+                            f"{str(e)}\n\n"
+                            "To fix this, run:\n"
+                            "cd /home/jack/Downloads/mcp-server\n"
+                            "source .venv/bin/activate\n"
+                            "pip install langchain-google-genai"
+                        )
+                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        return
+                    except Exception as e:
+                        error_msg = f"Failed to initialize LLM: {str(e)}"
+                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        return
+                    
+                    # Check if LLM is Ollama (doesn't support bind_tools)
+                    is_ollama = llm_config.get("type", "").lower() == "ollama"
+                    
+                    if is_ollama:
+                        # Ollama doesn't support bind_tools, use RAG mode instead with tool descriptions
+                        # For Ollama, we'll provide tool info in context but use simpler approach
+                        tool_descriptions = []
+                        for tool in all_tools:
+                            if hasattr(tool, 'name'):
+                                tool_desc = getattr(tool, 'description', 'No description')
+                                tool_descriptions.append(f"- {tool.name}: {tool_desc}")
+                        
+                        tools_context = "\n".join(tool_descriptions) if tool_descriptions else "No tools available"
+                        
+                        # Build enhanced prompt with tool information
+                        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+                        from src.rag import rag_system
+                        
+                        history = history_manager.get_session_messages(request.session_id)
+                        context = rag_system.retrieve_context(request.message)
+                        
+                        prompt = ChatPromptTemplate.from_messages([
+                            ("system", (
+                                "You are a helpful AI assistant.\n\n"
+                                "Available tools:\n{tools_context}\n\n"
+                                "Context from knowledge base:\n{context}\n\n"
+                                "When answering questions, reference the context when relevant. "
+                                "For calculations or specific operations, you can mention available tools, "
+                                "but note that tool calling is limited with this model."
+                            )),
+                            MessagesPlaceholder("chat_history"),
+                            ("human", "{input}"),
+                        ])
+                        
+                        # Stream response from Ollama
+                        full_response = ""
+                        try:
+                            prompt_messages = prompt.format(
+                                tools_context=tools_context,
+                                context=context,
+                                chat_history=history,
+                                input=request.message
+                            )
+                            async for chunk in llm.astream(prompt_messages):
+                                if hasattr(chunk, 'content') and chunk.content:
+                                    # Handle different content types (string, list, dict)
+                                    content_raw = chunk.content
+                                    
+                                    # Convert content to string if needed
+                                    if isinstance(content_raw, str):
+                                        content_str = content_raw
+                                    elif isinstance(content_raw, list):
+                                        # Handle list of content blocks (e.g., from Gemini)
+                                        content_str = ""
+                                        for item in content_raw:
+                                            if isinstance(item, dict):
+                                                # Extract text from content blocks
+                                                if "text" in item:
+                                                    content_str += item["text"]
+                                                elif "type" in item and item.get("type") == "text":
+                                                    content_str += item.get("text", "")
+                                            elif isinstance(item, str):
+                                                content_str += item
+                                    elif isinstance(content_raw, dict):
+                                        # Handle dict content
+                                        if "text" in content_raw:
+                                            content_str = content_raw["text"]
+                                        else:
+                                            content_str = str(content_raw)
+                                    else:
+                                        content_str = str(content_raw)
+                                    
+                                    # Stream character by character
+                                    if content_str:
+                                        for char in content_str:
+                                            full_response += char
+                                            yield f"data: {json.dumps({'chunk': char, 'done': False})}\n\n"
+                                            await asyncio.sleep(0.005)
+                        except Exception as e:
+                            import traceback
+                            error_details = str(e)
+                            if not error_details:
+                                error_details = repr(e)
+                            tb_str = traceback.format_exc()
+                            
+                            if "Connection" in tb_str or "timeout" in tb_str.lower() or "refused" in tb_str.lower():
+                                error_details = (
+                                    f"Connection error to Ollama: {error_details}. "
+                                    "Please check Ollama is running: docker ps | grep ollama"
+                                )
+                            else:
+                                error_details = f"LLM streaming error: {error_details}"
+                            
+                            print(f"❌ Ollama streaming error:\n{tb_str}")
+                            yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                            return
+                        
+                        # Save to history
+                        if full_response:
+                            session_history = history_manager.get_session_history(request.session_id)
+                            session_history.add_user_message(request.message)
+                            session_history.add_ai_message(full_response)
+                        
+                        yield f"data: {json.dumps({'chunk': '', 'done': True})}\n\n"
+                        return
+                    
+                    # For OpenAI/Groq - use agent with tools
+                    # Create agent - ensure tools are properly bound
+                    try:
+                        # Build a system prompt that lists available tools to prevent hallucination
+                        tool_names = []
+                        tool_descriptions = []
+                        for tool in all_tools:
+                            tool_name = None
+                            tool_desc = None
+                            if hasattr(tool, 'name'):
+                                tool_name = tool.name
+                                tool_desc = getattr(tool, 'description', 'No description')
+                            elif hasattr(tool, '__name__'):
+                                tool_name = tool.__name__
+                            else:
+                                tool_name = str(tool)
+                            
+                            if tool_name:
+                                tool_names.append(tool_name)
+                                if tool_desc:
+                                    tool_descriptions.append(f"- {tool_name}: {tool_desc}")
+                        
+                        # Create detailed system prompt
+                        tools_list = '\n'.join(tool_descriptions) if tool_descriptions else ', '.join(tool_names)
+                        system_prompt = (
+                            "You are a helpful AI assistant with access to these tools ONLY:\n"
+                            f"{tools_list}\n\n"
+                            "IMPORTANT RULES:\n"
+                            "- ONLY use tools from the list above\n"
+                            "- Do NOT call any tool that is not in this list\n"
+                            "- If you need a tool that is not available, inform the user\n"
+                            "- Do not make up or hallucinate tool names\n"
+                            "- Available tool names are: " + ', '.join(tool_names)
+                        )
+                        
+                        # Ensure tools are properly formatted for LangChain
+                        from langchain_core.tools import BaseTool
+                        formatted_tools = []
+                        for tool in all_tools:
+                            if isinstance(tool, BaseTool):
+                                formatted_tools.append(tool)
+                            else:
+                                formatted_tools.append(tool)
+                        
+                        agent = create_agent(
+                            model=llm,
+                            tools=formatted_tools,
+                            system_prompt=system_prompt
+                        )
+                    except Exception as e:
+                        import traceback
+                        error_msg = f"Failed to create agent: {str(e)}\n{traceback.format_exc()[:300]}"
+                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        return
                     
                     # Get history
                     history = history_manager.get_session_messages(request.session_id)
@@ -235,35 +600,106 @@ async def chat_stream(request: ChatRequest):
                     # Stream agent responses
                     full_response = ""
                     tool_calls_made = []
+                    seen_tools = set()  # Track tools we've already sent
                     
-                    async for event in agent.astream({"messages": messages}, stream_mode="values"):
-                        last_msg = event["messages"][-1]
+                    try:
+                        async for event in agent.astream({"messages": messages}, stream_mode="values"):
+                            last_msg = event["messages"][-1]
+                            
+                            if isinstance(last_msg, AIMessage):
+                                if getattr(last_msg, "tool_calls", None):
+                                    for call in last_msg.tool_calls:
+                                        tool_name = call.get('name') or call.get('tool_name', 'unknown')
+                                        
+                                        # Validate tool exists in our tools list
+                                        tool_exists = any(
+                                            (hasattr(tool, 'name') and tool.name == tool_name) or
+                                            (hasattr(tool, '__name__') and tool.__name__ == tool_name) or
+                                            str(tool) == tool_name
+                                            for tool in all_tools
+                                        )
+                                        
+                                        if not tool_exists:
+                                            error_msg = (
+                                                f"Tool '{tool_name}' not found. Available tools are: "
+                                                f"{', '.join(tool_names)}. "
+                                                f"Please only use tools from the available list."
+                                            )
+                                            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                                            return
+                                        
+                                        if tool_name not in seen_tools:
+                                            tool_calls_made.append(tool_name)
+                                            seen_tools.add(tool_name)
+                                            # Only send tool metadata, no text chunk
+                                            yield f"data: {json.dumps({'chunk': '', 'done': False, 'tool': tool_name})}\n\n"
+                                elif last_msg.content:
+                                    # Stream the actual response character by character for smooth streaming
+                                    # Handle different content types (string, list, dict)
+                                    content_raw = last_msg.content
+                                    
+                                    # Convert content to string if needed
+                                    if isinstance(content_raw, str):
+                                        content = content_raw
+                                    elif isinstance(content_raw, list):
+                                        # Handle list of content blocks (e.g., from Gemini)
+                                        content = ""
+                                        for item in content_raw:
+                                            if isinstance(item, dict):
+                                                # Extract text from content blocks
+                                                if "text" in item:
+                                                    content += item["text"]
+                                                elif "type" in item and item.get("type") == "text":
+                                                    content += item.get("text", "")
+                                            elif isinstance(item, str):
+                                                content += item
+                                    elif isinstance(content_raw, dict):
+                                        # Handle dict content (e.g., from some models)
+                                        if "text" in content_raw:
+                                            content = content_raw["text"]
+                                        else:
+                                            content = str(content_raw)
+                                    else:
+                                        content = str(content_raw)
+                                    
+                                    if content and content != full_response:  # Only stream new content
+                                        new_content = content[len(full_response):]
+                                        for char in new_content:
+                                            full_response += char
+                                            yield f"data: {json.dumps({'chunk': char, 'done': False})}\n\n"
+                                            await asyncio.sleep(0.005)  # Small delay for smooth streaming
+                    except Exception as e:
+                        import traceback
+                        error_details = str(e)
+                        if not error_details or error_details == "":
+                            # Try to get more details from exception
+                            error_details = repr(e)
+                            tb_str = traceback.format_exc()
+                            # Extract more useful info from traceback
+                            if "tool call validation failed" in tb_str:
+                                error_details = "Tool validation failed. The model tried to call a tool that doesn't exist in the available tools list."
+                            elif "Connection" in tb_str or "timeout" in tb_str.lower():
+                                error_details = "Connection error. Please check if Ollama is running and accessible."
+                            else:
+                                error_details = f"Agent execution failed: {tb_str.split('Traceback')[-1].strip()[:200]}"
                         
-                        if isinstance(last_msg, AIMessage):
-                            if getattr(last_msg, "tool_calls", None):
-                                for call in last_msg.tool_calls:
-                                    tool_info = f"🔧 Using tool: {call['name']}"
-                                    tool_calls_made.append(call['name'])
-                                    yield f"data: {json.dumps({'chunk': tool_info + '\\n', 'done': False, 'tool': call['name']})}\n\n"
-                            elif last_msg.content:
-                                # Stream the actual response
-                                # Split into words for smoother streaming
-                                words = last_msg.content.split()
-                                for i, word in enumerate(words):
-                                    chunk = word + (" " if i < len(words) - 1 else "")
-                                    full_response += chunk
-                                    yield f"data: {json.dumps({'chunk': chunk, 'done': False})}\n\n"
-                                    await asyncio.sleep(0.01)  # Small delay for effect
+                        error_msg = f"Error during agent execution: {error_details}"
+                        # Log full traceback for debugging
+                        print(f"❌ Agent execution error:\n{traceback.format_exc()}")
+                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        return
                     
                     # Save to history
-                    session_history = history_manager.get_session_history(request.session_id)
-                    session_history.add_user_message(request.message)
-                    session_history.add_ai_message(full_response)
+                    if full_response:
+                        session_history = history_manager.get_session_history(request.session_id)
+                        session_history.add_user_message(request.message)
+                        session_history.add_ai_message(full_response)
                     
                     yield f"data: {json.dumps({'chunk': '', 'done': True, 'tools_used': tool_calls_made})}\n\n"
                     
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+            error_msg = f"Unexpected error: {str(e)}"
+            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
     
     return StreamingResponse(
         generate(),
@@ -349,6 +785,7 @@ async def get_tools_info():
 class MCPServerRequest(BaseModel):
     name: str
     url: str
+    api_key: Optional[str] = None  # Optional API key/auth key for MCP server
 
 
 @app.get("/api/mcp-servers")
@@ -356,10 +793,17 @@ async def list_mcp_servers():
     """List all configured MCP servers"""
     try:
         servers = Config.load_mcp_servers()
+        # Don't send api_key in response for security
+        safe_servers = []
+        for server in servers:
+            safe_server = {k: v for k, v in server.items() if k != "api_key"}
+            safe_server["has_api_key"] = bool(server.get("api_key"))
+            safe_servers.append(safe_server)
+        
         return {
             "status": "success",
             "count": len(servers),
-            "servers": servers
+            "servers": safe_servers
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -371,6 +815,14 @@ async def add_mcp_server(server: MCPServerRequest):
     try:
         # Read existing servers
         config_file = Config.ROOT_DIR / Config.MCP_SERVERS_FILE
+        
+        # Prepare server config (include api_key if provided)
+        server_config = {
+            "name": server.name,
+            "url": server.url
+        }
+        if server.api_key:
+            server_config["api_key"] = server.api_key
         
         if config_file.exists():
             with open(config_file, 'r') as f:
@@ -386,21 +838,20 @@ async def add_mcp_server(server: MCPServerRequest):
                     detail=f"MCP server with name '{server.name}' or URL '{server.url}' already exists"
                 )
         
-        # Add new server
-        new_server = {
-            "name": server.name,
-            "url": server.url
-        }
-        servers.append(new_server)
+        # Add new server (use server_config which includes api_key if provided)
+        servers.append(server_config)
         
         # Save to file
         with open(config_file, 'w') as f:
             json.dump(servers, f, indent=2)
         
+        # Don't send api_key in response for security
+        safe_server = {k: v for k, v in server_config.items() if k != "api_key"}
+        
         return {
             "status": "success",
             "message": f"MCP server '{server.name}' added successfully",
-            "server": new_server,
+            "server": safe_server,
             "total_servers": len(servers)
         }
     
@@ -452,6 +903,14 @@ async def update_mcp_server(server_name: str, server: MCPServerRequest):
     try:
         config_file = Config.ROOT_DIR / Config.MCP_SERVERS_FILE
         
+        # Prepare server config (include api_key if provided)
+        server_config = {
+            "name": server.name,
+            "url": server.url
+        }
+        if server.api_key:
+            server_config["api_key"] = server.api_key
+        
         if not config_file.exists():
             raise HTTPException(status_code=404, detail="No MCP servers configured")
         
@@ -460,28 +919,158 @@ async def update_mcp_server(server_name: str, server: MCPServerRequest):
             servers = json.load(f)
         
         # Find and update server
-        updated = False
+        found = False
+        updated_index = -1
         for i, s in enumerate(servers):
             if s.get("name") == server_name:
-                servers[i] = {
-                    "name": server.name,
-                    "url": server.url
-                }
-                updated = True
+                servers[i] = server_config  # Use server_config which includes api_key if provided
+                found = True
+                updated_index = i
                 break
         
-        if not updated:
+        if not found:
             raise HTTPException(status_code=404, detail=f"MCP server '{server_name}' not found")
         
         # Save updated list
         with open(config_file, 'w') as f:
             json.dump(servers, f, indent=2)
         
+        # Don't send api_key in response for security
+        safe_server = {k: v for k, v in servers[updated_index].items() if k != "api_key"}
+        safe_server["has_api_key"] = bool(servers[updated_index].get("api_key"))
+        
         return {
             "status": "success",
             "message": f"MCP server '{server_name}' updated successfully",
-            "server": servers[i]
+            "server": safe_server
         }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# LLM Model Management Endpoints
+class LLMConfigRequest(BaseModel):
+    type: str  # "openai", "groq", "ollama", or "gemini"
+    model: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None  # For Ollama
+    api_base: Optional[str] = None  # Custom API base for OpenAI/Groq
+
+
+@app.get("/api/llm-config")
+async def get_llm_config():
+    """Get current LLM configuration"""
+    try:
+        config = Config.load_llm_config()
+        # Don't send API key in response for security
+        safe_config = {k: v for k, v in config.items() if k != "api_key" or not v}
+        return {
+            "status": "success",
+            "config": safe_config,
+            "has_api_key": bool(config.get("api_key"))
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/llm-config")
+async def set_llm_config(config: LLMConfigRequest):
+    """Set LLM configuration"""
+    try:
+        # Validate required fields based on type
+        if config.type.lower() == "ollama":
+            if not config.model:
+                raise HTTPException(status_code=400, detail="Model name is required for Ollama")
+            config_dict = {
+                "type": "ollama",
+                "model": config.model,
+                "base_url": config.base_url or "http://localhost:11434",
+                "active": True
+            }
+        elif config.type.lower() == "gemini":
+            if not config.model:
+                raise HTTPException(status_code=400, detail="Model name is required for Gemini")
+            if not config.api_key:
+                raise HTTPException(status_code=400, detail="API key is required for Gemini")
+            config_dict = {
+                "type": "gemini",
+                "model": config.model,
+                "api_key": config.api_key,
+                "active": True
+            }
+        elif config.type.lower() == "groq":
+            if not config.model:
+                raise HTTPException(status_code=400, detail="Model name is required for Groq")
+            if not config.api_key:
+                raise HTTPException(status_code=400, detail="API key is required for Groq")
+            config_dict = {
+                "type": "groq",
+                "model": config.model,
+                "api_key": config.api_key,
+                "active": True
+            }
+        else:  # OpenAI or default
+            if not config.model:
+                raise HTTPException(status_code=400, detail="Model name is required for OpenAI")
+            if not config.api_key:
+                raise HTTPException(status_code=400, detail="API key is required for OpenAI")
+            config_dict = {
+                "type": "openai",
+                "model": config.model,
+                "api_key": config.api_key,
+                "active": True
+            }
+            if config.api_base:
+                config_dict["api_base"] = config.api_base
+        
+        # Trim model name before saving
+        if config_dict.get("model"):
+            config_dict["model"] = config_dict["model"].strip()
+        
+        # Save configuration
+        if Config.save_llm_config(config_dict):
+            # Test the configuration by creating an LLM instance
+            try:
+                test_llm = create_llm_from_config(config_dict, streaming=False, temperature=0)
+                return {
+                    "status": "success",
+                    "message": f"LLM configuration saved and validated successfully. Model: {config_dict['model']}",
+                    "config": {
+                        "type": config_dict["type"],
+                        "model": config_dict["model"],
+                        "has_api_key": bool(config_dict.get("api_key"))
+                    }
+                }
+            except ImportError as e:
+                # Missing package - but still save the config
+                error_msg = str(e)
+                return {
+                    "status": "warning",
+                    "message": f"Configuration saved, but package is missing: {error_msg}",
+                    "config": {
+                        "type": config_dict["type"],
+                        "model": config_dict["model"],
+                        "has_api_key": bool(config_dict.get("api_key"))
+                    }
+                }
+            except Exception as e:
+                # Configuration saved but test failed
+                error_msg = str(e)
+                # Don't fail the save, but warn the user
+                return {
+                    "status": "warning",
+                    "message": f"Configuration saved, but validation failed: {error_msg}",
+                    "config": {
+                        "type": config_dict["type"],
+                        "model": config_dict["model"],
+                        "has_api_key": bool(config_dict.get("api_key"))
+                    }
+                }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to save LLM configuration")
     
     except HTTPException:
         raise

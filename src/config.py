@@ -16,13 +16,16 @@ except ImportError:
 class Config:
     """Application configuration"""
     
-    # OpenAI settings
+    # OpenAI settings (deprecated - use LLM config file)
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     
     # MCP settings
     MCP_SERVERS_FILE = "mcp_servers.json"
     MCP_SERVERS_ENV = os.getenv("MCP_SERVERS")
+    
+    # LLM settings
+    LLM_CONFIG_FILE = "llm_config.json"
     
     # Project root
     ROOT_DIR = Path(__file__).parent.parent
@@ -67,4 +70,57 @@ class Config:
             print(f"📝 Added {len(additional_servers)} additional server(s)")
         
         return servers
+    
+    @classmethod
+    def load_llm_config(cls) -> dict:
+        """
+        Load LLM configuration from file.
+        Returns default OpenAI config if file doesn't exist.
+        """
+        config_file = cls.ROOT_DIR / cls.LLM_CONFIG_FILE
+        if config_file.exists():
+            try:
+                with open(config_file, 'r') as f:
+                    config = json.load(f)
+                    # Validate and clean the config
+                    if not config.get('model') or not config['model'].strip():
+                        # If model is empty, set default based on type
+                        llm_type = config.get('type', 'openai').lower()
+                        if llm_type == 'gemini':
+                            config['model'] = 'gemini-1.5-flash'
+                        elif llm_type == 'ollama':
+                            config['model'] = 'llama3.2'
+                        else:
+                            config['model'] = cls.OPENAI_MODEL
+                    else:
+                        config['model'] = config['model'].strip()
+                    
+                    print(f"📝 Loaded LLM config: {config.get('type', 'openai')} - {config.get('model', 'unknown')}")
+                    return config
+            except Exception as e:
+                print(f"⚠️  Failed to load {cls.LLM_CONFIG_FILE}: {e}")
+        
+        # Default to OpenAI
+        default_config = {
+            "type": "openai",
+            "model": cls.OPENAI_MODEL,
+            "api_key": cls.OPENAI_API_KEY,
+            "active": True
+        }
+        return default_config
+    
+    @classmethod
+    def save_llm_config(cls, config: dict) -> bool:
+        """
+        Save LLM configuration to file.
+        """
+        try:
+            config_file = cls.ROOT_DIR / cls.LLM_CONFIG_FILE
+            with open(config_file, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"✓ LLM config saved: {config.get('type', 'unknown')} - {config.get('model', 'unknown')}")
+            return True
+        except Exception as e:
+            print(f"⚠️  Failed to save {cls.LLM_CONFIG_FILE}: {e}")
+            return False
 
