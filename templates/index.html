@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI MCP Agent - Chat Interface</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🤖 AI MCP Agent</h1>
+                <p>Intelligent assistant with RAG, MCP tools, and memory</p>
+            </div>
+            <div class="header-controls">
+                <select id="mode-select" class="mode-select">
+                    <option value="agent">Agent Mode (with MCP)</option>
+                    <option value="rag">RAG Only Mode</option>
+                </select>
+                <button id="mcp-manage-btn" class="btn btn-secondary">🔧 MCP Servers</button>
+                <button id="clear-btn" class="btn btn-secondary">Clear Chat</button>
+                <button id="info-btn" class="btn btn-info">ℹ️</button>
+            </div>
+        </header>
+
+        <!-- Info Panel (initially hidden) -->
+        <div id="info-panel" class="info-panel hidden">
+            <div class="info-content">
+                <h3>About AI MCP Agent</h3>
+                <p><strong>Available Features:</strong></p>
+                <ul>
+                    <li>🧠 <strong>RAG System:</strong> DosiBlog knowledge base with FAISS vectorstore</li>
+                    <li>🔧 <strong>MCP Tools:</strong> Math operations, Greetings, and more</li>
+                    <li>💬 <strong>Conversation Memory:</strong> Maintains context across the session</li>
+                    <li>⚡ <strong>Streaming:</strong> Real-time response generation</li>
+                </ul>
+                <p><strong>Example Queries:</strong></p>
+                <ul>
+                    <li>"What is DosiBlog?"</li>
+                    <li>"Calculate (10 + 5) * 2"</li>
+                    <li>"Say hello to me and tell me about the technologies used"</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- MCP Server Management Panel (initially hidden) -->
+        <div id="mcp-panel" class="mcp-panel hidden">
+            <div class="mcp-content">
+                <div class="mcp-header">
+                    <h3>🔧 MCP Server Management</h3>
+                    <button id="close-mcp-btn" class="btn-close">✕</button>
+                </div>
+                
+                <!-- Add New Server Form -->
+                <div class="mcp-add-section">
+                    <h4>Add New MCP Server</h4>
+                    <form id="add-mcp-form" class="mcp-form">
+                        <div class="form-group">
+                            <label for="mcp-name">Server Name:</label>
+                            <input 
+                                type="text" 
+                                id="mcp-name" 
+                                placeholder="e.g., Weather, Database"
+                                required
+                            >
+                        </div>
+                        <div class="form-group">
+                            <label for="mcp-url">Server URL:</label>
+                            <input 
+                                type="url" 
+                                id="mcp-url" 
+                                placeholder="https://your-server.com/mcp"
+                                required
+                            >
+                        </div>
+                        <button type="submit" class="btn btn-primary">
+                            ➕ Add Server
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Existing Servers List -->
+                <div class="mcp-list-section">
+                    <h4>Configured Servers (<span id="mcp-count">0</span>)</h4>
+                    <div id="mcp-servers-list" class="mcp-servers-list">
+                        <!-- Will be populated dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Chat Area -->
+        <div class="chat-container">
+            <div id="chat-messages" class="chat-messages">
+                <div class="message assistant">
+                    <div class="message-content">
+                        <strong>AI Assistant:</strong>
+                        <p>Hello! I'm your AI assistant with access to RAG (Retrieval Augmented Generation) and MCP tools. I can help you with:</p>
+                        <ul>
+                            <li>Information about DosiBlog</li>
+                            <li>Math calculations</li>
+                            <li>Personalized greetings</li>
+                            <li>And much more!</li>
+                        </ul>
+                        <p>What would you like to know?</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-container">
+                <div class="typing-indicator hidden" id="typing-indicator">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+                <form id="chat-form" class="chat-form">
+                    <input 
+                        type="text" 
+                        id="message-input" 
+                        class="message-input" 
+                        placeholder="Type your message here..." 
+                        autocomplete="off"
+                        required
+                    >
+                    <button type="submit" class="btn btn-primary" id="send-btn">
+                        Send
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-item">
+                <span class="status-label">Mode:</span>
+                <span id="current-mode" class="status-value">Agent</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Session:</span>
+                <span id="session-id" class="status-value">default</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Messages:</span>
+                <span id="message-count" class="status-value">0</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Status:</span>
+                <span id="connection-status" class="status-value status-connected">●  Connected</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
+
