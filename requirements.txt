@@ -24,8 +24,10 @@ typing-extensions
 python-dotenv
 
 # MCP support
-mcp
+mcp>=1.20.0
 langchain-mcp-adapters
+fastmcp>=2.13.0.2
+httpx>=0.28.1
 
 # FastAPI and Web Server
 fastapi

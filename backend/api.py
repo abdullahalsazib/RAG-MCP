@@ -3,6 +3,7 @@ FastAPI application with streaming chat endpoints
 """
 import asyncio
 import json
+import contextlib
 from typing import AsyncGenerator, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,13 +23,27 @@ from src.tools import retrieve_dosiblog_context
 from src.llm_factory import create_llm_from_config
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage, AIMessage
+from mcp_servers.registry import MCP_SERVERS, get_mcp_server, list_available_servers
 
 
-# Initialize FastAPI app
+# Create MCP lifespan context manager
+@contextlib.asynccontextmanager
+async def mcp_lifespan(app: FastAPI):
+    """Lifespan context manager for MCP servers"""
+    async with contextlib.AsyncExitStack() as stack:
+        # Enter all MCP server session managers
+        for server in MCP_SERVERS.values():
+            if hasattr(server, 'session_manager'):
+                await stack.enter_async_context(server.session_manager.run())
+        yield
+
+
+# Initialize FastAPI app with MCP lifespan
 app = FastAPI(
     title="AI MCP Agent API",
     description="Intelligent agent with RAG, MCP tools, and conversation memory",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=mcp_lifespan
 )
 
 # Add CORS middleware
@@ -1139,6 +1154,72 @@ async def set_llm_config(config: LLMConfigRequest):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# MCP Server endpoints
+@app.get("/api/mcp-servers/available")
+async def list_local_mcp_servers():
+    """List all locally available MCP servers"""
+    try:
+        servers = list_available_servers()
+        return {
+            "status": "success",
+            "servers": servers,
+            "count": len(servers)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mcp/{server_name}/info")
+async def get_mcp_server_info(server_name: str):
+    """Get information about a specific MCP server"""
+    try:
+        server = get_mcp_server(server_name)
+        if not server:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"MCP server '{server_name}' not found. Available servers: {', '.join(list_available_servers())}"
+            )
+        
+        # Try to get server info
+        info = {
+            "name": server_name,
+            "available": True,
+        }
+        
+        # Try to get tools if available
+        if hasattr(server, 'list_tools'):
+            try:
+                tools = server.list_tools()
+                info["tools"] = [{"name": tool.get("name"), "description": tool.get("description")} for tool in tools]
+            except:
+                pass
+        
+        return {
+            "status": "success",
+            "server": info
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Mount MCP servers at /api/mcp/{server_name}
+# This creates dynamic routes for each MCP server
+def setup_mcp_routes():
+    """Setup dynamic routes for MCP servers"""
+    from mcp_servers.registry import MCP_SERVERS
+    
+    for server_name, server_instance in MCP_SERVERS.items():
+        # Create a mount point for each server
+        if hasattr(server_instance, 'streamable_http_app'):
+            http_app = server_instance.streamable_http_app()
+            app.mount(f"/api/mcp/{server_name}", http_app, name=f"mcp_{server_name}")
+
+# Setup MCP routes
+setup_mcp_routes()
 
 
 if __name__ == "__main__":
