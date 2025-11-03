@@ -34,7 +34,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your React app URL
+    allow_origins=["*", "https://rag-mcp-htiw.onrender.com"],  # In production, specify your React app URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
