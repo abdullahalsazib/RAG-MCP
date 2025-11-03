@@ -29,30 +29,13 @@ class MCPClientManager:
             server_headers = server_config.get("headers", {})
             api_key = server_config.get("api_key")
             
-            # Handle API key in URL (e.g., Firecrawl: https://mcp.firecrawl.dev/<your_api_key>/sse)
-            # Check for common placeholder patterns in URL
-            final_url = server_url
-            url_has_placeholder = False
-            if api_key:
-                # Common placeholder patterns: <your_api_key>, {api_key}, {YOUR_API_KEY}, <api_key>, etc.
-                import re
-                placeholder_patterns = [
-                    r'<your_api_key>',
-                    r'<api_key>',
-                    r'<YOUR_API_KEY>',
-                    r'<API_KEY>',
-                    r'\{api_key\}',
-                    r'\{YOUR_API_KEY\}',
-                    r'\{API_KEY\}',
-                    r'\{your_api_key\}',
-                ]
-                
-                for pattern in placeholder_patterns:
-                    if re.search(pattern, final_url, re.IGNORECASE):
-                        final_url = re.sub(pattern, api_key, final_url, flags=re.IGNORECASE)
-                        url_has_placeholder = True
-                        print(f"  ℹ️  API key embedded in URL (placeholder replaced)")
-                        break
+            # Normalize URL: remove /sse and ensure /mcp endpoint
+            final_url = server_url.rstrip('/')
+            if final_url.endswith('/sse'):
+                final_url = final_url[:-4]  # Remove /sse
+            if not final_url.endswith('/mcp'):
+                # If URL doesn't end with /mcp, append it
+                final_url = final_url.rstrip('/') + '/mcp'
             
             print(f"Loading tools from {server_name} MCP server ({final_url})...")
             
@@ -63,14 +46,9 @@ class MCPClientManager:
                 # Build headers: start with existing headers
                 headers = dict(server_headers) if server_headers else {}
                 
-                # Add API key to headers ONLY if not embedded in URL
-                # Some servers (like Firecrawl) use URL embedding, others use headers
-                if api_key and not url_has_placeholder:
-                    # Try common header patterns - prioritize Authorization Bearer
-                    if "Authorization" not in headers:
-                        headers["Authorization"] = f"Bearer {api_key}"
-                    elif "X-API-Key" not in headers:
-                        headers["X-API-Key"] = api_key
+                # Add API key as X-API-Key header if provided
+                if api_key:
+                    headers["X-API-Key"] = api_key
                 
                 if headers:
                     server_params["headers"] = headers

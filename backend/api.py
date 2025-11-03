@@ -816,10 +816,18 @@ async def add_mcp_server(server: MCPServerRequest):
         # Read existing servers
         config_file = Config.ROOT_DIR / Config.MCP_SERVERS_FILE
         
+        # Normalize URL: remove /sse and ensure /mcp endpoint
+        normalized_url = server.url.rstrip('/')
+        if normalized_url.endswith('/sse'):
+            normalized_url = normalized_url[:-4]  # Remove /sse
+        if not normalized_url.endswith('/mcp'):
+            # If URL doesn't end with /mcp, append it
+            normalized_url = normalized_url.rstrip('/') + '/mcp'
+        
         # Prepare server config (include api_key if provided)
         server_config = {
             "name": server.name,
-            "url": server.url
+            "url": normalized_url
         }
         if server.api_key:
             server_config["api_key"] = server.api_key
@@ -903,10 +911,18 @@ async def update_mcp_server(server_name: str, server: MCPServerRequest):
     try:
         config_file = Config.ROOT_DIR / Config.MCP_SERVERS_FILE
         
+        # Normalize URL: remove /sse and ensure /mcp endpoint
+        normalized_url = server.url.rstrip('/')
+        if normalized_url.endswith('/sse'):
+            normalized_url = normalized_url[:-4]  # Remove /sse
+        if not normalized_url.endswith('/mcp'):
+            # If URL doesn't end with /mcp, append it
+            normalized_url = normalized_url.rstrip('/') + '/mcp'
+        
         # Prepare server config (include api_key if provided)
         server_config = {
             "name": server.name,
-            "url": server.url
+            "url": normalized_url
         }
         if server.api_key:
             server_config["api_key"] = server.api_key
