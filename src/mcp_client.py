@@ -46,9 +46,11 @@ class MCPClientManager:
                 # Build headers: start with existing headers
                 headers = dict(server_headers) if server_headers else {}
                 
-                # Add API key as X-API-Key header if provided
+                # Add API key header if provided
+                # Support custom header name via api_key_header, default to x-api-key
                 if api_key:
-                    headers["X-API-Key"] = api_key
+                    api_key_header = server_config.get("api_key_header", "x-api-key")
+                    headers[api_key_header] = api_key
                 
                 if headers:
                     server_params["headers"] = headers

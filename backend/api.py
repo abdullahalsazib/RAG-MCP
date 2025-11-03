@@ -288,6 +288,7 @@ async def chat_stream(request: ChatRequest):
         StreamingResponse with Server-Sent Events
     """
     async def generate() -> AsyncGenerator[str, None]:
+        stream_completed = False
         try:
             if request.mode == "rag":
                 # For RAG mode, we'll stream the response
@@ -304,10 +305,12 @@ async def chat_stream(request: ChatRequest):
                         "Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                     )
                     yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    stream_completed = True
                     return
                 except Exception as e:
                     error_msg = f"Failed to initialize LLM: {str(e)}"
                     yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                    stream_completed = True
                     return
                 
                 # Get history
@@ -392,7 +395,11 @@ async def chat_stream(request: ChatRequest):
                         error_details = f"LLM streaming error: {error_details}"
                     
                     print(f"❌ RAG streaming error:\n{tb_str}")
-                    yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                    try:
+                        yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                        stream_completed = True
+                    except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                        stream_completed = True
                     return
                 
                 # Save to history
@@ -402,6 +409,7 @@ async def chat_stream(request: ChatRequest):
                     session_history.add_ai_message(full_response)
                 
                 yield f"data: {json.dumps({'chunk': '', 'done': True})}\n\n"
+                stream_completed = True
                 
             else:
                 # Agent mode with streaming
@@ -422,10 +430,12 @@ async def chat_stream(request: ChatRequest):
                             "Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                         )
                         yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        stream_completed = True
                         return
                     except Exception as e:
                         error_msg = f"Failed to initialize LLM: {str(e)}"
                         yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        stream_completed = True
                         return
                     
                     # Check if LLM is Ollama (doesn't support bind_tools)
@@ -522,7 +532,11 @@ async def chat_stream(request: ChatRequest):
                                 error_details = f"LLM streaming error: {error_details}"
                             
                             print(f"❌ Ollama streaming error:\n{tb_str}")
-                            yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                            try:
+                                yield f"data: {json.dumps({'error': error_details, 'done': True})}\n\n"
+                                stream_completed = True
+                            except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                                stream_completed = True
                             return
                         
                         # Save to history
@@ -532,6 +546,7 @@ async def chat_stream(request: ChatRequest):
                             session_history.add_ai_message(full_response)
                         
                         yield f"data: {json.dumps({'chunk': '', 'done': True})}\n\n"
+                        stream_completed = True
                         return
                     
                     # For OpenAI/Groq - use agent with tools
@@ -586,7 +601,11 @@ async def chat_stream(request: ChatRequest):
                     except Exception as e:
                         import traceback
                         error_msg = f"Failed to create agent: {str(e)}\n{traceback.format_exc()[:300]}"
-                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        try:
+                            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                            stream_completed = True
+                        except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                            stream_completed = True
                         return
                     
                     # Get history
@@ -621,7 +640,11 @@ async def chat_stream(request: ChatRequest):
                                                 f"{', '.join(tool_names)}. "
                                                 f"Please only use tools from the available list."
                                             )
-                                            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                                            try:
+                                                yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                                                stream_completed = True
+                                            except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                                                stream_completed = True
                                             return
                                         
                                         if tool_name not in seen_tools:
@@ -682,7 +705,11 @@ async def chat_stream(request: ChatRequest):
                         error_msg = f"Error during agent execution: {error_details}"
                         # Log full traceback for debugging
                         print(f"❌ Agent execution error:\n{traceback.format_exc()}")
-                        yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                        try:
+                            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                            stream_completed = True
+                        except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                            stream_completed = True
                         return
                     
                     # Save to history
@@ -692,19 +719,34 @@ async def chat_stream(request: ChatRequest):
                         session_history.add_ai_message(full_response)
                     
                     yield f"data: {json.dumps({'chunk': '', 'done': True, 'tools_used': tool_calls_made})}\n\n"
+                    stream_completed = True
                     
+        except asyncio.CancelledError:
+            # Client disconnected - gracefully exit
+            print("⚠️  Client disconnected during streaming")
+            stream_completed = True
+            return
         except Exception as e:
             import traceback
             error_msg = f"Unexpected error: {str(e)}"
             print(f"❌ Streaming error:\n{traceback.format_exc()}")
-            yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
-        finally:
-            # Ensure stream always completes with done flag
             try:
-                # Final yield to ensure proper stream completion
-                pass  # Already yielded done in normal flow or error handler
+                yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+                stream_completed = True
             except Exception:
-                pass  # Ignore errors in finally
+                # If we can't yield (client disconnected), just exit
+                stream_completed = True
+        finally:
+            # Ensure stream always completes
+            if not stream_completed:
+                try:
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                except (GeneratorExit, StopAsyncIteration, asyncio.CancelledError):
+                    # Client disconnected - this is normal
+                    pass
+                except Exception:
+                    # Ignore other errors in finally
+                    pass
     
     return StreamingResponse(
         generate(),
