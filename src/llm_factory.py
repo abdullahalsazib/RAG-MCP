@@ -69,8 +69,7 @@ def create_llm_from_config(config: dict, streaming: bool = False, temperature: f
         # Local Ollama instance
         if ChatOllama is None:
             raise ImportError(
-                "ChatOllama is not available. Install it with: "
-                "pip install langchain-ollama"
+                "ChatOllama is not available. Ensure 'langchain-ollama' is in requirements.txt and redeploy."
             )
         
         base_url = config.get("base_url", "http://localhost:11434")
@@ -107,10 +106,7 @@ def create_llm_from_config(config: dict, streaming: bool = False, temperature: f
         # Google Gemini API
         if ChatGoogleGenerativeAI is None:
             raise ImportError(
-                "ChatGoogleGenerativeAI is not available. Install it with: "
-                "pip install langchain-google-genai\n"
-                "Or activate your virtual environment and run: "
-                "source .venv/bin/activate && pip install langchain-google-genai"
+                "ChatGoogleGenerativeAI is not available. Ensure 'langchain-google-genai' is in requirements.txt and redeploy."
             )
         
         api_key = config.get("api_key") or os.getenv("GOOGLE_API_KEY")

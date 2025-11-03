@@ -1,9 +1,12 @@
 # Core LangGraph / LangChain
 langgraph
-langchain   # Replace with the version you are using
-langchain-community   # For FAISS tool integration
-langchain-openai
-langchain-google-genai   # For Google Gemini support
+langchain
+langchain-community   # For FAISS tool integration and fallback imports
+langchain-openai   # For OpenAI models (and Groq, which uses OpenAI-compatible API)
+
+# LLM Provider Support (pre-install all for flexibility - allows switching models without redeploy)
+langchain-google-genai   # For Google Gemini models (gemini-1.5-flash, gemini-1.5-pro, etc.)
+langchain-ollama   # For Ollama local models (llama3.2, etc.)
 
 # Vectorstore
 faiss-cpu   # Or faiss-gpu if using GPU

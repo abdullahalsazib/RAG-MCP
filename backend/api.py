@@ -107,7 +107,7 @@ async def chat(request: ChatRequest):
             except ImportError as e:
                 raise HTTPException(
                     status_code=500,
-                    detail=f"{str(e)}\n\nTo fix: cd /home/jack/Downloads/mcp-server && source .venv/bin/activate && pip install langchain-google-genai"
+                    detail=f"Missing LLM package: {str(e)}\n\nAll required packages should be in requirements.txt. Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                 )
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to initialize LLM: {str(e)}")
@@ -138,7 +138,7 @@ async def chat(request: ChatRequest):
                 except ImportError as e:
                     raise HTTPException(
                         status_code=500,
-                        detail=f"{str(e)}\n\nTo fix: cd /home/jack/Downloads/mcp-server && source .venv/bin/activate && pip install langchain-google-genai"
+                        detail=f"Missing LLM package: {str(e)}\n\nAll required packages should be in requirements.txt. Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                     )
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"Failed to initialize LLM: {str(e)}")
@@ -297,13 +297,11 @@ async def chat_stream(request: ChatRequest):
                 try:
                     llm = create_llm_from_config(llm_config, streaming=True, temperature=0)
                 except ImportError as e:
-                    # Special handling for missing package
+                    # Missing package - should be in requirements.txt
                     error_msg = (
-                        f"{str(e)}\n\n"
-                        "To fix this, run:\n"
-                        "cd /home/jack/Downloads/mcp-server\n"
-                        "source .venv/bin/activate\n"
-                        "pip install langchain-google-genai"
+                        f"Missing LLM package: {str(e)}\n\n"
+                        "All required packages should be pre-installed from requirements.txt.\n"
+                        "Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                     )
                     yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
                     return
@@ -417,13 +415,11 @@ async def chat_stream(request: ChatRequest):
                     try:
                         llm = create_llm_from_config(llm_config, streaming=True, temperature=0)
                     except ImportError as e:
-                        # Special handling for missing package
+                        # Missing package - should be in requirements.txt
                         error_msg = (
-                            f"{str(e)}\n\n"
-                            "To fix this, run:\n"
-                            "cd /home/jack/Downloads/mcp-server\n"
-                            "source .venv/bin/activate\n"
-                            "pip install langchain-google-genai"
+                            f"Missing LLM package: {str(e)}\n\n"
+                            "All required packages should be pre-installed from requirements.txt.\n"
+                            "Please redeploy after ensuring requirements.txt includes all LLM provider packages."
                         )
                         yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
                         return
@@ -698,8 +694,17 @@ async def chat_stream(request: ChatRequest):
                     yield f"data: {json.dumps({'chunk': '', 'done': True, 'tools_used': tool_calls_made})}\n\n"
                     
         except Exception as e:
+            import traceback
             error_msg = f"Unexpected error: {str(e)}"
+            print(f"❌ Streaming error:\n{traceback.format_exc()}")
             yield f"data: {json.dumps({'error': error_msg, 'done': True})}\n\n"
+        finally:
+            # Ensure stream always completes with done flag
+            try:
+                # Final yield to ensure proper stream completion
+                pass  # Already yielded done in normal flow or error handler
+            except Exception:
+                pass  # Ignore errors in finally
     
     return StreamingResponse(
         generate(),
