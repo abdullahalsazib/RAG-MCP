@@ -11,9 +11,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import sys
 from pathlib import Path
+import logging
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add project root to path for imports (if needed)
+# Note: When run as module, parent.parent is project root
 
 from src.config import Config
 from src.history import history_manager
@@ -26,10 +27,37 @@ from langchain_core.messages import HumanMessage, AIMessage
 from mcp_servers.registry import MCP_SERVERS, get_mcp_server, list_available_servers
 
 
+def suppress_mcp_cleanup_errors(loop, context):
+    """
+    Suppress expected RuntimeError exceptions from MCP client cleanup.
+    These occur when background tasks try to exit cancel scopes in different tasks.
+    """
+    exception = context.get('exception')
+    if exception and isinstance(exception, RuntimeError):
+        error_msg = str(exception).lower()
+        # Suppress expected cancel scope errors from MCP cleanup
+        if "cancel scope" in error_msg and "different task" in error_msg:
+            # These are expected during MCP client cleanup - suppress them silently
+            # The MCP library creates background tasks that can't properly exit
+            # cancel scopes when cleanup happens in a different task context
+            return
+    
+    # For all other exceptions, use the default handler
+    loop.default_exception_handler(context)
+
+
 # Create MCP lifespan context manager
 @contextlib.asynccontextmanager
 async def mcp_lifespan(app: FastAPI):
     """Lifespan context manager for MCP servers"""
+    # Set up exception handler to suppress MCP cleanup errors
+    try:
+        loop = asyncio.get_running_loop()
+        loop.set_exception_handler(suppress_mcp_cleanup_errors)
+    except Exception:
+        # If we can't set the handler, that's okay - errors will still be logged
+        pass
+    
     async with contextlib.AsyncExitStack() as stack:
         # Enter all MCP server session managers
         for server in MCP_SERVERS.values():

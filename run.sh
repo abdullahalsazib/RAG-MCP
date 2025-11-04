@@ -9,5 +9,5 @@ if [ -f .env ]; then
 fi
 
 # Run with uv
-uv run --no-project python ai_mcp_dynamic.py "$@"
+uv run --no-project python examples/ai_mcp_dynamic.py "$@"
 

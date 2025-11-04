@@ -52,6 +52,47 @@ python ai_mcp_dynamic.py --query "What's my name?" --session-id alice
 python ai_mcp_dynamic.py --mode rag --query "Tell me about DosiBlog"
 ```
 
+## 🐳 Docker Support
+
+### Quick Start with Docker
+
+```bash
+# Build the image
+docker build -t mcp-server:latest .
+
+# Run the container
+docker run -d -p 8000:8000 \
+  -e OPENAI_API_KEY=your-api-key \
+  -v $(pwd)/config:/app/config:ro \
+  mcp-server:latest
+```
+
+### Using Docker Compose
+
+```bash
+# Start the service
+docker-compose up -d
+
+# View logs
+docker-compose logs -f
+
+# Stop the service
+docker-compose down
+```
+
+### Automated Docker Hub Publishing
+
+This project includes GitHub Actions workflow that automatically builds and pushes Docker images to Docker Hub on:
+- Push to `main`/`master` branch
+- Version tags (e.g., `v1.0.0`)
+- Manual trigger
+
+**Setup Instructions:**
+1. Add secrets to GitHub: `DOCKER_HUB_USERNAME` and `DOCKER_HUB_ACCESS_TOKEN`
+2. See `.github/SETUP.md` for detailed setup guide
+
+For more Docker documentation, see [DOCKER.md](DOCKER.md).
+
 ## 📚 Documentation
 
 | Document | Description |

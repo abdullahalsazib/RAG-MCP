@@ -27,7 +27,7 @@ HARD_CODED = {
    
     "mihadul islam": {
         "name": "Mihadul Islam",
-        "role": "Co-founder, DosiBridge",
+        "role": "Founder, DosiBridge",
         "summary": "Mihadul Islam is a founder and CEO of DosiBridge, leading engineering and operations.",
         "links": [
             {"title": "DosiBridge About", "url": "https://dosibridge.com/about"},

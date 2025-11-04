@@ -14,5 +14,5 @@ echo "🌐 Open your browser to start chatting!"
 echo ""
 
 # Run with uv
-uv run --no-project python -m uvicorn backend.api:app --host 0.0.0.0 --port 8000 --reload
+uv run --no-project python -m uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
 

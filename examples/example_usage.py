@@ -14,8 +14,10 @@ except ImportError:
     pass  # dotenv not required if env vars already set
 
 import sys
-sys.path.insert(0, '.')
-from ai_mcp_dynamic import main
+from pathlib import Path
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from examples.ai_mcp_dynamic import main
 
 async def test_agent_memory():
     """Test agent with memory across multiple queries"""

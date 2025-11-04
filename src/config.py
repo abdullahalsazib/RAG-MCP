@@ -21,11 +21,11 @@ class Config:
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
     
     # MCP settings
-    MCP_SERVERS_FILE = "mcp_servers.json"
+    MCP_SERVERS_FILE = "config/mcp_servers.json"
     MCP_SERVERS_ENV = os.getenv("MCP_SERVERS")
     
     # LLM settings
-    LLM_CONFIG_FILE = "llm_config.json"
+    LLM_CONFIG_FILE = "config/llm_config.json"
     
     # Project root
     ROOT_DIR = Path(__file__).parent.parent
